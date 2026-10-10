@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Recomp 30 · Workout &amp; Protein Tracker</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { color-scheme: dark; box-sizing: border-box; padding-top: env(safe-area-inset-top, 0px); }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body { background:#0f172a; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
+  .chk { appearance:none; width:2.25rem; height:2.25rem; border-radius:.6rem; border:2px solid #475569; background:#0f172a; display:grid; place-content:center; cursor:pointer; flex:none; }
+  .chk:checked { background:#10b981; border-color:#10b981; }
+  .chk:checked::after { content:"✓"; color:#022c22; font-weight:800; font-size:1.2rem; }
+  .chk:focus-visible, button:focus-visible, input:focus-visible { outline:2px solid #22d3ee; outline-offset:2px; }
+  .bar { transition: width .35s ease; }
+  .confetti { position:fixed; top:-12px; width:9px; height:14px; z-index:60; pointer-events:none; animation: fall 2.4s ease-in forwards; }
+  @keyframes fall { to { transform: translateY(105vh) rotate(720deg); opacity:.9; } }
+  @media (prefers-reduced-motion: reduce) { .confetti { display:none; } .bar { transition:none; } }
+</style>
+</head>
+<body class="text-slate-100 min-h-screen">
+<div id="app" class="max-w-3xl mx-auto px-4 pt-5 pb-40"></div>
+
+<!-- Rest timer -->
+<div id="timer" class="fixed inset-x-0 bottom-0 z-40 bg-slate-950/95 border-t border-slate-700 backdrop-blur hidden" style="padding-bottom:env(safe-area-inset-bottom,0px)">
+  <div class="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
+    <div id="tdisp" class="text-3xl font-bold tabular-nums text-cyan-300 w-20">01:30</div>
+    <div class="flex gap-1.5" id="tpresets"></div>
+    <div class="flex gap-1.5 ml-auto">
+      <button id="tstart" class="h-11 px-4 rounded-xl bg-emerald-500 text-slate-950 font-semibold">Start</button>
+      <button id="treset" class="h-11 px-4 rounded-xl bg-slate-700 font-semibold">Reset</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="fixed inset-0 z-50 hidden bg-black/70 p-4 overflow-auto">
+  <div class="max-w-xl mx-auto mt-10 bg-slate-800 border border-slate-700 rounded-2xl p-4">
+    <h3 class="font-semibold text-lg mb-1">Your data (JSON)</h3>
+    <p class="text-sm text-slate-400 mb-3">Copy this and save it somewhere safe, or try the download button.</p>
+    <textarea id="mtext" readonly class="w-full h-56 bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs font-mono"></textarea>
+    <div class="flex gap-2 mt-3">
+      <button id="mcopy" class="h-11 px-4 rounded-xl bg-cyan-500 text-slate-950 font-semibold">Copy</button>
+      <button id="mdl" class="h-11 px-4 rounded-xl bg-slate-700 font-semibold">Download file</button>
+      <button id="mclose" class="h-11 px-4 rounded-xl bg-slate-700 font-semibold ml-auto">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- Config ---------- */
+const DAYS = 30, PROTEIN_TARGET = 120, PROTEIN_OK = 100, KEY = 'recomp30.v1';
+const ROUTINE = [
+  { name:'Leg Press',                  sets:3, target:'10–12 reps', rest:90, unit:'reps' },
+  { name:'Incline Chest Press (Machine)', sets:3, target:'10 reps', rest:90, unit:'reps' },
+  { name:'Lat Pulldown',               sets:3, target:'8–10 reps',  rest:90, unit:'reps' },
+  { name:'Bodyweight Squats',          sets:2, target:'12 reps',    rest:60, unit:'reps', bw:true },
+  { name:'Knee Plank',                 sets:3, target:'30s hold',   rest:45, unit:'sec',  bw:true },
+  { name:'Cobra Stretch',              sets:2, target:'30s',        rest:0,  unit:'sec',  bw:true },
+];
+const QUICK = [
+  { name:'2 Boiled Eggs', p:12 }, { name:'Thick Daal (1 serving)', p:8 },
+  { name:'Fish/Chicken Curry', p:25 }, { name:'¼ Grill Chicken', p:28 },
+  { name:'Tok Dahi (1 cup)', p:5 },
+];
+
+/* ---------- Store ---------- */
+const Store = {
+  data: { days:{} },
+  load() { try { const r = localStorage.getItem(KEY); if (r) this.data = JSON.parse(r); } catch(e) {} },
+  save() { try { localStorage.setItem(KEY, JSON.stringify(this.data)); } catch(e) {} },
+  reset() { this.data = { days:{} }; try { localStorage.removeItem(KEY); } catch(e) {} },
+  day(n) {
+    const d = this.data.days;
+    if (!d[n]) d[n] = { sets: ROUTINE.map(e => Array.from({length:e.sets}, () => ({done:false, w:'', r:''}))), meals:[], complete:false };
+    return d[n];
+  },
+};
+
+/* ---------- Derived ---------- */
+const protein = d => d.meals.reduce((s,m) => s + (+m.p || 0), 0);
+const setCounts = d => { let t=0, c=0; d.sets.forEach(a => a.forEach(s => { t++; if (s.done) c++; })); return {t, c}; };
+function status(n) {
+  const d = Store.data.days[n];
+  if (!d) return 'none';
+  if (d.complete) return 'done';
+  return (setCounts(d).c > 0 || d.meals.length) ? 'prog' : 'none';
+}
+function stats() {
+  let done = 0, last = 0;
+  for (let i=1;i<=DAYS;i++) if (status(i)==='done') { done++; last = i; }
+  let streak = 0;
+  for (let i=last;i>=1 && status(i)==='done';i--) streak++;
+  return { done, streak, pct: Math.round(done/DAYS*100) };
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = s => String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+
+/* ---------- View ---------- */
+let view = { page:'home', day:1 };
+const app = document.getElementById('app');
+const BADGE = {
+  none: 'bg-slate-800 border-slate-700 text-slate-300',
+  prog: 'bg-cyan-950 border-cyan-600 text-cyan-200',
+  done: 'bg-emerald-500 border-emerald-400 text-slate-950',
+};
+const LABEL = { none:'Not started', prog:'In progress', done:'Completed' };
+
+function renderHome() {
+  const s = stats();
+  let grid = '';
+  for (let i=1;i<=DAYS;i++) {
+    const st = status(i);
+    grid += `<button data-act="open" data-day="${i}" aria-label="Day ${i}, ${LABEL[st]}" class="aspect-square min-h-[64px] rounded-2xl border-2 ${BADGE[st]} flex flex-col items-center justify-center active:scale-95 transition">
+      <span class="text-xl font-bold leading-none">${st==='done'?'✓':i}</span>
+      <span class="text-[10px] mt-1 opacity-80">${st==='done'?'Day '+i:LABEL[st]}</span></button>`;
+  }
+  app.innerHTML = `
+    <header class="mb-5">
+      <h1 class="text-2xl font-bold">Recomp 30</h1>
+      <p class="text-slate-400 text-sm">175 cm · 78 kg · Tighten the belly, build lean muscle · ${PROTEIN_TARGET}g protein daily</p>
+    </header>
+    <section class="bg-slate-800 border border-slate-700 rounded-2xl p-4 mb-5">
+      <div class="flex items-end justify-between mb-2">
+        <div><span class="text-4xl font-bold text-emerald-400">${s.done}</span><span class="text-slate-400 text-lg"> / ${DAYS} days</span></div>
+        <div class="text-right"><div class="text-2xl font-bold text-cyan-300">${s.streak}</div><div class="text-xs text-slate-400">day streak</div></div>
+      </div>
+      <div class="h-3 bg-slate-900 rounded-full overflow-hidden"><div class="bar h-full bg-gradient-to-r from-emerald-400 to-cyan-400" style="width:${s.pct}%"></div></div>
+      <div class="text-xs text-slate-400 mt-1.5">${s.pct}% complete</div>
+    </section>
+    <section class="grid grid-cols-5 sm:grid-cols-6 gap-2">${grid}</section>
+    <footer class="mt-8 pt-5 border-t border-slate-800 flex flex-wrap gap-2">
+      <button data-act="export" class="h-11 px-4 rounded-xl bg-slate-800 border border-slate-700 font-medium">Export JSON</button>
+      <button data-act="reset" class="h-11 px-4 rounded-xl bg-slate-800 border border-rose-900 text-rose-300 font-medium">Reset progress</button>
+      <p class="w-full text-xs text-slate-500">Data is saved in this browser only.</p>
+    </footer>`;
+}
+
+function renderDay() {
+  const n = view.day, d = Store.day(n), sc = setCounts(d), p = protein(d);
+  const ppct = Math.min(100, Math.round(p/PROTEIN_TARGET*100));
+  const ex = ROUTINE.map((e, ei) => {
+    const rows = d.sets[ei].map((s, si) => `
+      <div class="flex items-center gap-2">
+        <input type="checkbox" class="chk" data-act="set" data-e="${ei}" data-s="${si}" ${s.done?'checked':''} aria-label="${esc(e.name)} set ${si+1} done">
+        <span class="text-sm text-slate-400 w-9">Set ${si+1}</span>
+        ${e.bw && e.unit==='sec' ? '' : `<input type="number" inputmode="decimal" min="0" placeholder="${e.bw?'BW':'kg'}" value="${esc(s.w)}" data-f="w" data-e="${ei}" data-s="${si}" class="h-11 w-full min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2 text-center" aria-label="Weight kg">`}
+        <input type="number" inputmode="numeric" min="0" placeholder="${e.unit}" value="${esc(s.r)}" data-f="r" data-e="${ei}" data-s="${si}" class="h-11 w-full min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2 text-center" aria-label="Actual ${e.unit}">
+      </div>`).join('');
+    const allDone = d.sets[ei].every(s => s.done);
+    return `<div class="bg-slate-800 border ${allDone?'border-emerald-600':'border-slate-700'} rounded-2xl p-4">
+      <div class="flex items-start justify-between gap-2 mb-3">
+        <div><h3 class="font-semibold">${esc(e.name)}</h3><p class="text-xs text-slate-400">${e.sets} × ${e.target}${e.rest?' · rest '+e.rest+'s':''}</p></div>
+        ${e.rest?`<button data-act="rest" data-sec="${e.rest}" class="h-10 px-3 rounded-lg bg-cyan-950 border border-cyan-700 text-cyan-200 text-sm shrink-0">Rest ${e.rest}s</button>`:''}
+      </div>
+      <div class="space-y-2">${rows}</div></div>`;
+  }).join('');
+
+  const meals = d.meals.length ? d.meals.map((m, i) => `
+    <li class="flex items-center justify-between bg-slate-900 rounded-lg px-3 py-2">
+      <span>${esc(m.name)} <span class="text-emerald-400 font-medium">+${m.p}g</span></span>
+      <button data-act="delmeal" data-i="${i}" class="h-9 w-9 rounded-lg text-slate-400 hover:text-rose-300" aria-label="Remove ${esc(m.name)}">✕</button></li>`).join('')
+    : '<li class="text-sm text-slate-500">Nothing logged yet. Tap a food above.</li>';
+
+  app.innerHTML = `
+    <div class="flex items-center gap-2 mb-4">
+      <button data-act="home" class="h-11 px-3 rounded-xl bg-slate-800 border border-slate-700" aria-label="Back to dashboard">← Back</button>
+      <div class="ml-1"><h2 class="text-xl font-bold">Day ${n}</h2><p class="text-xs text-slate-400">${LABEL[status(n)]} · ${sc.c}/${sc.t} sets</p></div>
+      <div class="ml-auto flex gap-1">
+        <button data-act="prev" ${n<=1?'disabled':''} class="h-11 w-11 rounded-xl bg-slate-800 border border-slate-700 disabled:opacity-30" aria-label="Previous day">‹</button>
+        <button data-act="next" ${n>=DAYS?'disabled':''} class="h-11 w-11 rounded-xl bg-slate-800 border border-slate-700 disabled:opacity-30" aria-label="Next day">›</button>
+      </div>
+    </div>
+    ${d.complete?`<div class="mb-4 rounded-2xl bg-emerald-500 text-slate-950 p-4 font-semibold">🎉 Day ${n} complete. Nice work, keep the streak alive.</div>`:''}
+    <h2 class="font-semibold mb-2 text-slate-300">Workout</h2>
+    <div class="space-y-3 mb-6">${ex}</div>
+
+    <h2 class="font-semibold mb-2 text-slate-300">Protein</h2>
+    <section class="bg-slate-800 border border-slate-700 rounded-2xl p-4 mb-6">
+      <div class="flex justify-between items-end mb-2"><div><span class="text-3xl font-bold ${p>=PROTEIN_OK?'text-emerald-400':'text-cyan-300'}">${p}g</span><span class="text-slate-400"> / ${PROTEIN_TARGET}g</span></div><span class="text-sm text-slate-400">${ppct}%</span></div>
+      <div class="h-3 bg-slate-900 rounded-full overflow-hidden mb-4"><div class="bar h-full ${p>=PROTEIN_OK?'bg-emerald-400':'bg-cyan-400'}" style="width:${ppct}%"></div></div>
+      <div class="grid grid-cols-2 gap-2 mb-4">
+        ${QUICK.map((q,i)=>`<button data-act="quick" data-i="${i}" class="min-h-[48px] px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-left text-sm active:scale-95 transition"><span class="text-emerald-400 font-semibold">+${q.p}g</span> ${esc(q.name)}</button>`).join('')}
+      </div>
+      <div class="flex gap-2 mb-4">
+        <input id="cname" type="text" placeholder="Food name" class="h-11 flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3">
+        <input id="cgram" type="number" inputmode="numeric" min="0" placeholder="g" class="h-11 w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 text-center">
+        <button data-act="custom" class="h-11 px-4 rounded-xl bg-cyan-500 text-slate-950 font-semibold">Add</button>
+      </div>
+      <ul class="space-y-1.5">${meals}</ul>
+    </section>
+
+    <button data-act="complete" class="w-full h-14 rounded-2xl ${d.complete?'bg-slate-700':'bg-emerald-500 text-slate-950'} font-bold text-lg">${d.complete?'Reopen this day':'Mark day complete'}</button>`;
+}
+
+function render() { view.page==='home' ? renderHome() : renderDay(); document.getElementById('timer').classList.toggle('hidden', view.page==='home'); }
+
+/* ---------- Actions ---------- */
+function confetti() {
+  const colors = ['#10b981','#22d3ee','#fbbf24','#f472b6','#a78bfa'];
+  for (let i=0;i<70;i++) {
+    const c = document.createElement('div');
+    c.className = 'confetti';
+    c.style.left = Math.random()*100 + 'vw';
+    c.style.background = colors[i % colors.length];
+    c.style.animationDelay = (Math.random()*.6) + 's';
+    c.style.animationDuration = (1.8 + Math.random()*1.2) + 's';
+    document.body.appendChild(c);
+    setTimeout(() => c.remove(), 3600);
+  }
+}
+function completeDay() {
+  const d = Store.day(view.day);
+  if (d.complete) { d.complete = false; Store.save(); return render(); }
+  const sc = setCounts(d), p = protein(d), issues = [];
+  if (sc.c < Math.ceil(sc.t*0.8)) issues.push(`only ${sc.c} of ${sc.t} sets are checked`);
+  if (p < PROTEIN_OK) issues.push(`protein is ${p}g (aim for ${PROTEIN_OK}–${PROTEIN_TARGET}g)`);
+  if (issues.length && !confirm('Heads up: ' + issues.join(' and ') + '.\n\nMark the day complete anyway?')) return;
+  d.complete = true; Store.save(); render(); confetti(); window.scrollTo({top:0, behavior:'smooth'});
+}
+function openExport() {
+  const m = document.getElementById('modal');
+  document.getElementById('mtext').value = JSON.stringify({ exportedAt:new Date().toISOString(), ...Store.data }, null, 2);
+  m.classList.remove('hidden');
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-act]'); if (!t) return;
+  const a = t.dataset.act, d = view.page==='day' ? Store.day(view.day) : null;
+  if (a==='set') { d.sets[+t.dataset.e][+t.dataset.s].done = t.checked; Store.save(); render(); return; }
+  switch (a) {
+    case 'open': view = { page:'day', day:+t.dataset.day }; Timer.reset(90); render(); window.scrollTo(0,0); break;
+    case 'home': view.page='home'; render(); break;
+    case 'prev': view.day--; render(); window.scrollTo(0,0); break;
+    case 'next': view.day++; render(); window.scrollTo(0,0); break;
+    case 'rest': Timer.reset(+t.dataset.sec); Timer.toggle(); break;
+    case 'quick': { const q = QUICK[+t.dataset.i]; d.meals.push({name:q.name, p:q.p}); Store.save(); render(); break; }
+    case 'custom': {
+      const name = document.getElementById('cname').value.trim(), g = +document.getElementById('cgram').value;
+      if (!name || !(g > 0)) { alert('Enter a food name and protein grams.'); break; }
+      d.meals.push({name, p:g}); Store.save(); render(); break;
+    }
+    case 'delmeal': d.meals.splice(+t.dataset.i, 1); Store.save(); render(); break;
+    case 'complete': completeDay(); break;
+    case 'export': openExport(); break;
+    case 'reset': if (confirm('Delete all progress? This cannot be undone.')) { Store.reset(); render(); } break;
+  }
+});
+// Save typed weights/reps without re-rendering (keeps keyboard open)
+document.addEventListener('input', e => {
+  const t = e.target; if (!t.dataset.f) return;
+  Store.day(view.day).sets[+t.dataset.e][+t.dataset.s][t.dataset.f] = t.value; Store.save();
+});
+
+/* ---------- Modal ---------- */
+document.getElementById('mclose').onclick = () => document.getElementById('modal').classList.add('hidden');
+document.getElementById('mcopy').onclick = async () => {
+  const ta = document.getElementById('mtext');
+  try { await navigator.clipboard.writeText(ta.value); } catch(e) { ta.select(); document.execCommand('copy'); }
+  document.getElementById('mcopy').textContent = 'Copied';
+  setTimeout(() => document.getElementById('mcopy').textContent = 'Copy', 1500);
+};
+document.getElementById('mdl').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([document.getElementById('mtext').value], {type:'application/json'}));
+  a.download = 'recomp30-progress.json'; document.body.appendChild(a); a.click(); a.remove();
+};
+
+/* ---------- Rest timer ---------- */
+const Timer = {
+  total:90, left:90, id:null,
+  el: document.getElementById('tdisp'), btn: document.getElementById('tstart'),
+  draw() { this.el.textContent = fmt(this.left); this.btn.textContent = this.id ? 'Pause' : (this.left < this.total && this.left > 0 ? 'Resume' : 'Start'); },
+  reset(sec) { clearInterval(this.id); this.id = null; if (sec) this.total = sec; this.left = this.total; this.draw(); this.presets(); },
+  toggle() {
+    if (this.id) { clearInterval(this.id); this.id = null; return this.draw(); }
+    if (this.left <= 0) this.left = this.total;
+    this.id = setInterval(() => { if (--this.left <= 0) this.finish(); this.draw(); }, 1000); this.draw();
+  },
+  finish() {
+    clearInterval(this.id); this.id = null; this.left = 0;
+    try { navigator.vibrate && navigator.vibrate([250,100,250]); } catch(e) {}
+    try { const c = new (window.AudioContext||window.webkitAudioContext)(), o = c.createOscillator(); o.frequency.value = 880; o.connect(c.destination); o.start(); setTimeout(() => { o.stop(); c.close(); }, 400); } catch(e) {}
+  },
+  presets() {
+    document.getElementById('tpresets').innerHTML = [45,60,90].map(s =>
+      `<button data-sec="${s}" class="h-11 w-12 rounded-xl text-sm font-semibold ${s===this.total?'bg-cyan-500 text-slate-950':'bg-slate-800 border border-slate-700'}">${s}s</button>`).join('');
+  },
+};
+document.getElementById('tpresets').addEventListener('click', e => { const b = e.target.closest('[data-sec]'); if (b) Timer.reset(+b.dataset.sec); });
+document.getElementById('tstart').onclick = () => Timer.toggle();
+document.getElementById('treset').onclick = () => Timer.reset();
+
+/* ---------- Init ---------- */
+Store.load(); Timer.reset(90); render();
+</script>
+</body>
+</html>
